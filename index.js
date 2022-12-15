@@ -142,7 +142,7 @@ function main ({
       const commonFields = Object.keys(curType.getFields());
       if (types && types.length) {
         // remove last line with trailing } added by previous code
-        queryStr = queryStr.replace(/\n\s*\}$/m, "\n");
+        queryStr = queryStr.replace(/\n\s*\}$/, "\n");
         const indent = `${'    '.repeat(curDepth)}`;
         const fragIndent = `${'    '.repeat(curDepth + 1)}`;
         queryStr += `${fragIndent}__typename\n`
@@ -150,7 +150,7 @@ function main ({
         for (let i = 0, len = types.length; i < len; i++) {
           const valueTypeName = types[i];
           const valueType = gqlSchema.getType(valueTypeName);
-          const unionChildQuery = Object.keys(valueType.getFields())
+          const interfaceChildQuery = Object.keys(valueType.getFields())
             // do not add interface fields again in subquery
             .filter((field) => !commonFields.includes(field))
             .map(cur => generateQuery(cur, valueType, curName, argumentsDict, duplicateArgCounts,
@@ -158,9 +158,9 @@ function main ({
             .filter(cur => Boolean(cur))
             .join('\n');
 
-          /* Exclude empty unions */
-          if (unionChildQuery) {
-            queryStr += `${fragIndent}... on ${valueTypeName} {\n${unionChildQuery}\n${fragIndent}}\n`;
+          /* Exclude empty interfaces */
+          if (interfaceChildQuery) {
+            queryStr += `${fragIndent}... on ${valueTypeName} {\n${interfaceChildQuery}\n${fragIndent}}\n`;
           }
         }
         queryStr += `${indent}}`;
