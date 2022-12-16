@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const program = require('commander');
-const { Source, buildSchema } = require('graphql');
+const { Source, buildSchema, isEqualType } = require('graphql');
 const del = require('del');
 
 function main ({
@@ -136,10 +136,39 @@ function main ({
       }
     }
 
-    /* Interface types */
+    /**
+     * Interface Types
+     * 
+     * [1] Whenever we encounter an Interface, we need to add it's possible types' fields.
+     * [2] Fields common across all types shall not be added multiple times.
+     * [3] Graphql requires that across the possible types, there must not be any fields
+     * sharing the same name but different definitions. In such cases, we need to alias
+     * these fields, which we do by appending the type name to the field name.
+     * 
+     * @example
+     * Schema:
+     * interface Item { id: Int! }
+     * type ItemA extends Item { title: String! }
+     * type ItemB extends Item { title: String }
+     * type Query { getItem: Item! }
+     * 
+     * Result:
+     * getItem {
+     *   id
+     *   __typename
+     *   ... on ItemA { title_ItemA: title }
+     *   ... on ItemB { title_ItemB: title }
+     * }
+     */
     if (curType.astNode && curType.astNode.kind === 'InterfaceTypeDefinition') {
-      const types = gqlSchema.getPossibleTypes(curType);
-      const commonFields = Object.keys(curType.getFields());
+      const types = gqlSchema.getPossibleTypes(curType); // [1]
+      const commonFields = Object.keys(curType.getFields()); // [2]
+      const allFields = types.reduce((acc, type) => [...acc, ...Object.values(type.getFields())], []);
+      const conflictFields = allFields
+        .filter((f1, i) => allFields.find((f2, j) => i !== j && f1.name === f2.name && !isEqualType(f1.type, f2.type)))
+        .map((field) => field.name)
+        .filter((field, index, self) => self.indexOf(field) === index);
+
       if (types && types.length) {
         // remove last line with trailing } added by previous code
         queryStr = queryStr.replace(/\n\s*\}$/, "\n");
@@ -151,16 +180,22 @@ function main ({
           const valueTypeName = types[i];
           const valueType = gqlSchema.getType(valueTypeName);
           const interfaceChildQuery = Object.keys(valueType.getFields())
-            // do not add interface fields again in subquery
-            .filter((field) => !commonFields.includes(field))
-            .map(cur => generateQuery(cur, valueType, curName, argumentsDict, duplicateArgCounts,
-              crossReferenceKeyList, curDepth + 2, true).queryStr)
+            .filter((field) => !commonFields.includes(field)) // [2]
+            .map(cur => {
+              const { queryStr } = generateQuery(cur, valueType, curName, argumentsDict, duplicateArgCounts,
+                  crossReferenceKeyList, curDepth + 1, false);
+              // use aliases for conflicting field names [3]
+              if (queryStr && conflictFields.includes(cur)) {
+                return queryStr.replace(cur, `${cur}_${valueTypeName}: ${cur}`);
+              }
+              return queryStr;
+            })
             .filter(cur => Boolean(cur))
             .join('\n');
 
           /* Exclude empty interfaces */
           if (interfaceChildQuery) {
-            queryStr += `${fragIndent}... on ${valueTypeName} {\n${interfaceChildQuery}\n${fragIndent}}\n`;
+            queryStr += `${fragIndent}... on ${valueTypeName} {\n${interfaceChildQuery.replace(/^/gm, '    ')}\n${fragIndent}}\n`;
           }
         }
         queryStr += `${indent}}`;
