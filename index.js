@@ -16,6 +16,7 @@ function main ({
   fileExtension,
   assumeValid,
   includeCrossReferences = false,
+  filterPath,
 } = {}) {
   let assume = false;
   if (assumeValid === 'true') {
@@ -25,6 +26,8 @@ function main ({
   const typeDef = fs.readFileSync(schemaFilePath, 'utf-8');
   const source = new Source(typeDef);
   const gqlSchema = buildSchema(source, { assumeValidSDL: assume });
+
+  const filter = filterPath ? require(path.resolve(filterPath)) : () => true;
 
   del.sync(destDirPath);
   path.resolve(destDirPath).split(path.sep).reduce((before, cur) => {
@@ -96,8 +99,14 @@ function main ({
     crossReferenceKeyList = [], // [`${curParentName}To${curName}Key`]
     curDepth = 1,
     fromUnion = false,
+    _path = [], // all parent fields
   ) => {
     const field = gqlSchema.getType(curParentType).getFields()[curName];
+    const path = [..._path, field];
+
+    /* run through custom filter function */
+    if (!filter(path, gqlSchema)) return '';
+
     const curTypeName = field.type.toJSON().replace(/[[\]!]/g, '');
     const curType = gqlSchema.getType(curTypeName);
     let queryStr = '';
@@ -122,7 +131,7 @@ function main ({
           return includeDeprecatedFields || !fieldSchema.deprecationReason;
         })
         .map(cur => generateQuery(cur, curType, curName, argumentsDict, duplicateArgCounts,
-          crossReferenceKeyList, curDepth + 1, fromUnion).queryStr)
+          crossReferenceKeyList, curDepth + 1, fromUnion, path).queryStr)
         .filter(cur => Boolean(cur))
         .join('\n');
     }
@@ -179,7 +188,7 @@ function main ({
             .filter((field) => !commonFields.includes(field)) // [2]
             .map(cur => {
               const { queryStr } = generateQuery(cur, type, curName, argumentsDict, duplicateArgCounts,
-                  crossReferenceKeyList, depth, false);
+                  crossReferenceKeyList, depth, false, path);
               // use aliases for conflicting field names [3]
               if (queryStr && conflictFields.includes(cur)) {
                 return queryStr.replace(cur, `${cur}_${type.name}: ${cur}`);
@@ -214,7 +223,7 @@ function main ({
           const valueType = gqlSchema.getType(valueTypeName);
           const unionChildQuery = Object.keys(valueType.getFields())
             .map(cur => generateQuery(cur, valueType, curName, argumentsDict, duplicateArgCounts,
-              crossReferenceKeyList, curDepth + 2, true).queryStr)
+              crossReferenceKeyList, curDepth + 2, true, path).queryStr)
             .filter(cur => Boolean(cur))
             .join('\n');
 
@@ -324,6 +333,7 @@ if (require.main === module) {
     .option('--ext [value]', 'extension file to use', 'gql')
     .option('-C, --includeDeprecatedFields [value]', 'Flag to include deprecated fields (The default is to exclude)')
     .option('-R, --includeCrossReferences', 'Flag to include fields that have been added to parent queries already (The default is to exclude)')
+    .option('--filterPath [value]', 'path of a file containing a javascript function which filters fields')
     .parse(process.argv);
 
   return main({...program, fileExtension: program.ext })
