@@ -5,6 +5,9 @@ const program = require('commander');
 const { Source, buildSchema, isEqualType } = require('graphql');
 const del = require('del');
 
+const indent = (string, amount = 1) => string.replace(/^/gm, '    '.repeat(amount));
+const unindent = (string, amount = 1) => string.replace(new RegExp("^" + '    '.repeat(amount), "gm"), '');
+
 function main ({
   schemaFilePath,
   destDirPath,
@@ -170,35 +173,30 @@ function main ({
         .filter((field, index, self) => self.indexOf(field) === index);
 
       if (types && types.length) {
-        // remove last line with trailing } added by previous code
-        queryStr = queryStr.replace(/\n\s*\}$/, "\n");
-        const indent = `${'    '.repeat(curDepth)}`;
-        const fragIndent = `${'    '.repeat(curDepth + 1)}`;
-        queryStr += `${fragIndent}__typename\n`
-
-        for (let i = 0, len = types.length; i < len; i++) {
-          const valueTypeName = types[i];
-          const valueType = gqlSchema.getType(valueTypeName);
-          const interfaceChildQuery = Object.keys(valueType.getFields())
+        const childQuery = types.map((type) => {
+          const depth = curDepth + 1;
+          const queryString = Object.keys(type.getFields())
             .filter((field) => !commonFields.includes(field)) // [2]
             .map(cur => {
-              const { queryStr } = generateQuery(cur, valueType, curName, argumentsDict, duplicateArgCounts,
-                  crossReferenceKeyList, curDepth + 1, false);
+              const { queryStr } = generateQuery(cur, type, curName, argumentsDict, duplicateArgCounts,
+                  crossReferenceKeyList, depth, false);
               // use aliases for conflicting field names [3]
               if (queryStr && conflictFields.includes(cur)) {
-                return queryStr.replace(cur, `${cur}_${valueTypeName}: ${cur}`);
+                return queryStr.replace(cur, `${cur}_${type.name}: ${cur}`);
               }
               return queryStr;
             })
             .filter(cur => Boolean(cur))
             .join('\n');
-
-          /* Exclude empty interfaces */
-          if (interfaceChildQuery) {
-            queryStr += `${fragIndent}... on ${valueTypeName} {\n${interfaceChildQuery.replace(/^/gm, '    ')}\n${fragIndent}}\n`;
-          }
-        }
-        queryStr += `${indent}}`;
+          
+          return queryString
+            ? `... on ${type.name} {\n${unindent(queryString, depth - 1)}\n}`
+            : undefined;
+        }).filter(Boolean);
+        
+        const interfaceQuery = ["__typename", ...childQuery].join("\n");
+        // insert before trailing "}", added by previous code
+        queryStr = queryStr.replace(/\n(\s*\})$/, `\n${indent(interfaceQuery, curDepth + 1)}\n\$1`);
       }
     }
 
